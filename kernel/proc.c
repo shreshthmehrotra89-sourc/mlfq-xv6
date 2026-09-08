@@ -10,6 +10,14 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
+// MLFQ: one FIFO queue for each priority level
+struct proc_queue {
+  struct proc *head;
+  struct proc *tail;
+};
+struct proc_queue queues[4];
+struct spinlock queue_lock;
+
 struct proc *initproc;
 
 int nextpid = 1;
@@ -47,17 +55,59 @@ proc_mapstacks(pagetable_t kpgtbl)
 void
 procinit(void)
 {
-  struct proc *p;
+    initlock(&queue_lock, "queue_lock");
 
-  initlock(&pid_lock, "nextpid");
-  initlock(&wait_lock, "wait_lock");
-  for (p = proc; p < &proc[NPROC]; p++) {
-    initlock(&p->lock, "proc");
-    p->state = UNUSED;
-    p->kstack = KSTACK((int)(p - proc));
-  }
+    for(int i = 0; i < 4; i++){
+      queues[i].head = 0;
+      queues[i].tail = 0;
+    }
+    struct proc *p;
+
+    initlock(&pid_lock, "nextpid");
+    initlock(&wait_lock, "wait_lock");
+    for (p = proc; p < &proc[NPROC]; p++) {
+      initlock(&p->lock, "proc");
+      p->state = UNUSED;
+      p->kstack = KSTACK((int)(p - proc));
+    }
 }
 
+//add process to queue
+void enqueue(struct proc_queue *q,struct proc *p)
+{
+  acquire(&queue_lock);
+  p->next=0;
+  if(q->tail==0)
+  {
+    q->tail=p;
+    q->head=p;
+  }
+  else
+  {
+    q->tail->next=p;
+    q->tail=q->tail->next;
+  }
+  release(&queue_lock);
+}
+
+//delete process from queue
+struct proc* dequeue(struct proc_queue *q)
+{
+  acquire(&queue_lock);
+  if(q->head==0)
+  {
+    release(&queue_lock);
+    return 0;
+  }
+  struct proc* p=q->head;
+  struct proc* t=q->head->next;
+  q->head->next=0;
+  q->head=t;
+  if(q->head==0)
+  q->tail=0;
+  release(&queue_lock);
+  return p;
+}
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.

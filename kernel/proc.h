@@ -105,4 +105,5 @@ struct proc {
   // MLFQ bookkeeping
   int queue;
   int ticks_in_slice;
+  struct proc *next;
 };

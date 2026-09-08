@@ -138,6 +138,54 @@ int higher_priority_process_exists(struct proc *current)
   release(&queue_lock);
   return found;
 }
+
+void
+priority_boost(void)
+{
+    int i;          
+    struct proc *p;
+    struct proc *next;
+
+    acquire(&queue_lock);
+
+    // Move all RUNNABLE processes from Q1, Q2, Q3 to Q0
+    for(i = 1; i < 4; i++){
+        p = queues[i].head;
+
+        while(p != 0)
+        {
+            next = p->next;
+
+            p->queue = 0;
+            p->ticks_in_slice = 0;
+            p->next = 0;
+
+            // Add process to tail of Q0
+            if(queues[0].tail == 0){
+                queues[0].head = p;
+                queues[0].tail = p;
+            } else {
+                queues[0].tail->next = p;
+                queues[0].tail = p;
+            }
+            p = next;
+        }
+        // Old queue is now empty
+        queues[i].head = 0;
+        queues[i].tail = 0;
+    }
+    release(&queue_lock);
+
+    // Reset priority and slice information for all other processes
+    for(i = 0; i < NPROC; i++){
+        p = &proc[i];
+
+        if(p->state == RUNNING || p->state == SLEEPING){
+            p->queue = 0;
+            p->ticks_in_slice = 0;
+        }
+    }
+}
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
@@ -527,7 +575,6 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    struct proc* p;
     p=get_next_process();
     if(p!=0)
     {
@@ -576,12 +623,6 @@ sched(void)
   mycpu()->intena = intena;
 }
 
-// Give up the CPU for one scheduling round.
-void
-yield(void)
-{
-    cpu_yield();				                
-}
 //voluntary yield
 void
 cpu_yield(void)
@@ -596,6 +637,14 @@ cpu_yield(void)
   sched();
   release(&p->lock);
 }
+
+// Give up the CPU for one scheduling round.
+void
+yield(void)
+{
+    cpu_yield();				                
+}
+
 //time slice exhaustion/predemption
 void
 mlfq_yield(void)
@@ -801,7 +850,12 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    printk("%d %s %s", p->pid, state, p->name);
+    printk("%d %s %s Q%d ticks=%d",
+       p->pid,
+       state,
+       p->name,
+       p->queue,
+       p->ticks_in_slice);
     printk("\n");
   }
 }

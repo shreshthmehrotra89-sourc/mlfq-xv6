@@ -6,6 +6,8 @@
 #include "proc.h"
 #include "defs.h"
 
+extern int time_slices[4];
+
 struct spinlock tickslock;
 uint ticks;
 
@@ -184,17 +186,15 @@ kerneltrap()
 void
 clockintr()
 {
-  if (cpuid() == 0) {
-    acquire(&tickslock);
-    ticks++;
-    wakeup(&ticks);
-    release(&tickslock);
-  }
-
-  // ask for the next timer interrupt. this also clears
-  // the interrupt request. 1000000 is about a tenth
-  // of a second.
-  w_stimecmp(r_time() + 1000000);
+    if(cpuid() == 0){
+      acquire(&tickslock);
+      ticks++;
+      if(ticks % 48 == 0)
+        priority_boost();
+      wakeup(&ticks);
+      release(&tickslock);
+    }
+    w_stimecmp(r_time() + 1000000);
 }
 
 // check if it's an external interrupt or software interrupt,

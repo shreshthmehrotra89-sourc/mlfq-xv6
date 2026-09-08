@@ -88,6 +88,7 @@ usertrap(void)
   {
       struct proc *p = myproc();
       p->ticks_in_slice++;
+	  p->cpu_time++;
 
       if (p->ticks_in_slice >= time_slices[p->queue]) {
         mlfq_yield();
@@ -170,6 +171,7 @@ kerneltrap()
       struct proc *p = myproc();
 
       p->ticks_in_slice++;
+	  p->cpu_time++;
 
       if (p->ticks_in_slice >= time_slices[p->queue]) {
         mlfq_yield();

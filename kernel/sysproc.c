@@ -110,3 +110,13 @@ sys_uptime(void)
   release(&tickslock);
   return xticks;
 }
+
+uint64
+sys_wait_info(void)
+{
+  uint64 addr;
+
+  argaddr(0, &addr);
+
+  return kwait_info(addr);
+}

@@ -36,6 +36,18 @@ extern char trampoline[]; // trampoline.S
 // must be acquired before any p->lock.
 struct spinlock wait_lock;
 
+int
+get_ticks(void)
+{
+  int t;
+
+  acquire(&tickslock);
+  t = ticks;
+  release(&tickslock);
+
+  return t;
+}
+
 // Allocate a page for each process's kernel stack.
 // Map it high in memory, followed by an invalid
 // guard page.
@@ -255,6 +267,11 @@ found:
   p->queue = 0;
   p->ticks_in_slice = 0;
 
+  p->start_time = 0;
+    p->first_run_time = -1;
+    p->end_time = 0;
+    p->cpu_time = 0;
+
   // Allocate a trapframe page.
   if ((p->trapframe = (struct trapframe *)kalloc()) == 0) {
     freeproc(p);
@@ -357,6 +374,11 @@ userinit(void)
   p->queue = 0;
   p->ticks_in_slice = 0;
   p->state = RUNNABLE;
+  p->start_time = 0;
+  p->first_run_time = -1;
+  p->end_time = 0;
+  p->cpu_time = 0;
+  p->start_time = ticks;
   enqueue(&queues[0], p);
   release(&p->lock);
 }
@@ -432,6 +454,7 @@ kfork(void)
   np->queue = 0;
   np->ticks_in_slice = 0;
   np->state = RUNNABLE;
+  np->start_time = ticks;
   enqueue(&queues[0], np);
   release(&np->lock);
 
@@ -489,6 +512,7 @@ kexit(int status)
   acquire(&p->lock);
 
   p->xstate = status;
+  p->end_time = get_ticks();
   p->state = ZOMBIE;
 
   release(&wait_lock);
@@ -497,7 +521,73 @@ kexit(int status)
   sched();
   panic("zombie exit");
 }
+int
+kwait_info(uint64 addr)
+{
+  struct proc *pp;
+  int havekids, pid;
+  struct proc_info info;
+  struct proc *p = myproc();
 
+  acquire(&wait_lock);
+
+  for(;;){
+
+    havekids = 0;
+
+    for(pp = proc; pp < &proc[NPROC]; pp++){
+
+      if(pp->parent == p){
+
+        acquire(&pp->lock);
+
+        havekids = 1;
+
+        if(pp->state == ZOMBIE){
+
+          pid = pp->pid;
+
+          info.pid = pp->pid;
+          info.start_time = pp->start_time;
+          info.first_run_time = pp->first_run_time;
+          info.end_time = pp->end_time;
+          info.cpu_time = pp->cpu_time;
+
+          if(addr != 0 &&
+             copyout(p->pagetable, p->sz,
+                     addr, (char *)&info,
+                     sizeof(info)) < 0){
+
+            release(&pp->lock);
+            release(&wait_lock);
+            return -1;
+          }
+
+          pp->parent = 0;
+
+          freeproc(pp);
+
+          release(&pp->lock);
+          release(&wait_lock);
+
+          return pid;
+        }
+
+        release(&pp->lock);
+      }
+    }
+
+    if(!havekids || killed(p)){
+      release(&wait_lock);
+      return -1;
+    }
+
+    sleep_prepare(p);
+    release(&wait_lock);
+    sleep();
+    acquire(&wait_lock);
+  }
+}
 // Wait for a child process to exit and return its pid.
 // Return -1 if this process has no children.
 int
@@ -579,13 +669,17 @@ scheduler(void)
     if(p!=0)
     {
       acquire(&p->lock);
-      if(p->state==RUNNABLE)
-      {
-          p->state=RUNNING;
-          c->proc=p;
-          swtch(&c->context,&p->context);
-          c->proc=0;
-      }
+      if(p->state == RUNNABLE)
+        {
+            p->state = RUNNING;
+
+            if(p->first_run_time == -1)
+            p->first_run_time = get_ticks();
+
+            c->proc = p;
+            swtch(&c->context, &p->context);
+            c->proc = 0;
+        }
       release(&p->lock);
     }
     else
@@ -850,12 +944,43 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    printk("%d %s %s Q%d ticks=%d",
-       p->pid,
-       state,
-       p->name,
-       p->queue,
-       p->ticks_in_slice);
+    printk("%d %s %s Q%d ticks=%d start=%d first=%d end=%d cpu=%d",
+   p->pid,
+   state,
+   p->name,
+   p->queue,
+   p->ticks_in_slice,
+   p->start_time,
+   p->first_run_time,
+   p->end_time,
+   p->cpu_time);
     printk("\n");
   }
+}
+
+int
+get_process_info(int pid, struct proc_info *info)
+{
+  struct proc *p;
+
+  for(p = proc; p < &proc[NPROC]; p++){
+
+    acquire(&p->lock);
+
+    if(p->pid == pid){
+
+      info->pid = p->pid;
+      info->start_time = p->start_time;
+      info->first_run_time = p->first_run_time;
+      info->end_time = p->end_time;
+      info->cpu_time = p->cpu_time;
+
+      release(&p->lock);
+      return 0;
+    }
+
+    release(&p->lock);
+  }
+
+  return -1;
 }

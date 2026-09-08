@@ -48,3 +48,13 @@ void printf(const char *, ...) __attribute__((format(printf, 1, 2)));
 // umalloc.c
 void *malloc(uint);
 void free(void *);
+
+struct proc_info {
+  int pid;
+  int start_time;
+  int first_run_time;
+  int end_time;
+  int cpu_time;
+};
+
+int wait_info(struct proc_info *);

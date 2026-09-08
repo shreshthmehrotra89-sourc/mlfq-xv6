@@ -186,6 +186,7 @@ void cpu_yield(void);
 void mlfq_yield(void);
 int higher_priority_process_exists(struct proc *p);
 void priority_boost(void);
+int kwait_info(uint64);
 
 // number of elements in fixed-size array
 #define NELEM(x) (sizeof(x) / sizeof((x)[0]))

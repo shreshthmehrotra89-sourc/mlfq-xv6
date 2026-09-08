@@ -108,6 +108,19 @@ struct proc* dequeue(struct proc_queue *q)
   release(&queue_lock);
   return p;
 }
+
+//avail process in queues
+struct proc* get_next_process()
+{
+    int i;
+    for(i=0;i<4;i++)
+    {
+        struct proc* p=dequeue(&queues[i]);
+        if(p!=0)
+        return p;
+    }
+    return 0;
+}
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
@@ -276,9 +289,10 @@ userinit(void)
   initproc = p;
 
   p->cwd = namei("/");
-
+  p->queue = 0;
+  p->ticks_in_slice = 0;
   p->state = RUNNABLE;
-
+  enqueue(&queues[0], p);
   release(&p->lock);
 }
 
@@ -350,7 +364,10 @@ kfork(void)
   release(&wait_lock);
 
   acquire(&np->lock);
+  np->queue = 0;
+  np->ticks_in_slice = 0;
   np->state = RUNNABLE;
+  enqueue(&queues[0], np);
   release(&np->lock);
 
   return pid;
@@ -494,23 +511,17 @@ scheduler(void)
     intr_off();
 
     int found = 0;
-    for (p = proc; p < &proc[NPROC]; p++) {
+    struct proc* p;
+    p=get_next_process();
+    if(p!=0)
+    {
       acquire(&p->lock);
-      if (p->state == RUNNABLE) {
-        // Switch to chosen process.  It is the process's job
-        // to release its lock and then reacquire it
-        // before jumping back to us.
-        p->state = RUNNING;
-        c->proc = p;
-        swtch(&c->context, &p->context);
-
-        // Don't re-enable interrupts on release.
-        mycpu()->intena = 0;
-
-        // Process is done running for now.
-        // It should have changed its p->state before coming back.
-        c->proc = 0;
-        found = 1;
+      if(p->state==RUNNABLE)
+      {
+          p->state=RUNNING;
+          c->proc=p;
+          swtch(&c->context,&p->context);
+          c->proc=0;
       }
       release(&p->lock);
     }

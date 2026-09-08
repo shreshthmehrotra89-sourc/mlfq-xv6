@@ -17,6 +17,8 @@ struct proc_queue {
 };
 struct proc_queue queues[4];
 struct spinlock queue_lock;
+// Time slices for queues 0, 1, 2, 3
+int time_slices[4] = {1, 4, 8, 16};
 
 struct proc *initproc;
 
@@ -120,6 +122,21 @@ struct proc* get_next_process()
         return p;
     }
     return 0;
+}
+
+int higher_priority_process_exists(struct proc *current)
+{
+  int i;
+  int found = 0;
+  acquire(&queue_lock);
+  for (i = 0; i < current->queue; i++) {
+    if (queues[i].head != 0) {
+      found = 1;
+      break;
+    }
+  }
+  release(&queue_lock);
+  return found;
 }
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
@@ -510,7 +527,6 @@ scheduler(void)
     intr_on();
     intr_off();
 
-    int found = 0;
     struct proc* p;
     p=get_next_process();
     if(p!=0)
@@ -525,7 +541,8 @@ scheduler(void)
       }
       release(&p->lock);
     }
-    if (found == 0) {
+    else
+    {
       // nothing to run; stop running on this core until an interrupt.
       asm volatile("wfi");
     }
@@ -563,13 +580,38 @@ sched(void)
 void
 yield(void)
 {
+    cpu_yield();				                
+}
+//voluntary yield
+void
+cpu_yield(void)
+{
   struct proc *p = myproc();
   acquire(&p->lock);
   p->state = RUNNABLE;
+  // Voluntary yield:
+  // priority remains unchanged.
+  // Put process at the tail of its current queue.
+  enqueue(&queues[p->queue], p);
   sched();
   release(&p->lock);
 }
-
+//time slice exhaustion/predemption
+void
+mlfq_yield(void)
+{
+  struct proc *p = myproc();
+  acquire(&p->lock);
+  p->state = RUNNABLE;
+  // Time slice has been completely consumed.
+  if (p->queue < 3)
+    p->queue++;
+  // New time slice starts in the new queue.
+  p->ticks_in_slice = 0;
+  enqueue(&queues[p->queue], p);
+  sched();
+  release(&p->lock);
+}
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.
 void
@@ -652,6 +694,7 @@ wakeup(void *chan)
       // go to sleep, also set it back to RUNNING.
       if (p->state == SLEEPING) {
         p->state = RUNNABLE;
+        enqueue(&queues[p->queue], p);
       }
     }
     release(&p->lock);
@@ -671,8 +714,8 @@ kkill(int pid)
     if (p->pid == pid) {
       p->killed = 1;
       if (p->state == SLEEPING) {
-        // Wake process from sleep().
         p->state = RUNNABLE;
+        enqueue(&queues[p->queue], p);
       }
       release(&p->lock);
       return 0;

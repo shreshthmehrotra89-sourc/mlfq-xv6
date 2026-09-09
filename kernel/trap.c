@@ -222,7 +222,7 @@ clockintr()
       ticks++;
       #ifdef SCHED_MLFQ
       if(ticks % 48 == 0)
-        priority_boost();
+        priority_boost(ticks);
       #endif
       wakeup(&ticks);
       release(&tickslock);

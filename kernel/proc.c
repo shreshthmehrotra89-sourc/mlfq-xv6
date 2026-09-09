@@ -6,6 +6,7 @@
 #include "proc.h"
 #include "defs.h"
 
+
 struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
@@ -156,51 +157,71 @@ int higher_priority_process_exists(struct proc *current)
   return found;
 }
 
-void
-priority_boost(void)
+void priority_boost(int tick)
 {
-    int i;          
+    int i;
+    int boosted = 0;
     struct proc *p;
     struct proc *next;
 
     acquire(&queue_lock);
 
-    // Move all RUNNABLE processes from Q1, Q2, Q3 to Q0
-    for(i = 1; i < 4; i++){
-        p = queues[i].head;
+    /*
+     * Move all queued processes from Q1, Q2, Q3 to Q0.
+     */
+    for(i=1;i<4;i++){
+        p=queues[i].head;
 
-        while(p != 0)
-        {
-            next = p->next;
+        while(p!=0){
+            next=p->next;
 
-            p->queue = 0;
-            p->ticks_in_slice = 0;
-            p->next = 0;
+            p->queue=0;
+            p->ticks_in_slice=0;
+            p->next=0;
 
-            // Add process to tail of Q0
-            if(queues[0].tail == 0){
-                queues[0].head = p;
-                queues[0].tail = p;
-            } else {
-                queues[0].tail->next = p;
-                queues[0].tail = p;
+            if(queues[0].tail==0){
+                queues[0].head=p;
+                queues[0].tail=p;
             }
-            p = next;
+            else{
+                queues[0].tail->next=p;
+                queues[0].tail=p;
+            }
+
+            boosted=1;
+            p=next;
         }
-        // Old queue is now empty
-        queues[i].head = 0;
-        queues[i].tail = 0;
+
+        queues[i].head=0;
+        queues[i].tail=0;
     }
+
     release(&queue_lock);
 
-    // Reset priority and slice information for all other processes
-    for(i = 0; i < NPROC; i++){
-        p = &proc[i];
+    /*
+     * Also reset processes that are currently RUNNING or SLEEPING.
+     */
+    for(i=0;i<NPROC;i++){
+        p=&proc[i];
 
-        if(p->state == RUNNING || p->state == SLEEPING){
-            p->queue = 0;
-            p->ticks_in_slice = 0;
+        if((p->state==RUNNING || p->state==SLEEPING)
+           && p->queue>0){
+
+            p->queue=0;
+            p->ticks_in_slice=0;
+            boosted=1;
         }
+    }
+
+    /*
+     * Only print when an actual lower-priority process
+     * was moved/reset.
+     */
+    if(boosted){
+        printk("[MLFQ] ========================================\n");
+        printk("[MLFQ] PRIORITY BOOST at tick=%d\n", tick);
+        printk("[MLFQ] All active processes moved to Q0\n");
+        printk("[MLFQ] ========================================\n");
     }
 }
 #endif
@@ -775,35 +796,26 @@ yield(void)
 #ifdef SCHED_MLFQ
 
   struct proc *p = myproc();
-
   acquire(&p->lock);
-
   p->state = RUNNABLE;
-
+  printk("[MLFQ] tick=%d pid=%d Q%d voluntary-yield\n",
+       get_ticks(), p->pid, p->queue);
   // Voluntary yield: remain in the same priority queue.
   enqueue(&queues[p->queue], p);
-
   sched();
-
   release(&p->lock);
 
 #else
 
   // Original xv6 Round-Robin yield.
   struct proc *p = myproc();
-
   acquire(&p->lock);
-
   p->state = RUNNABLE;
-
   sched();
-
   release(&p->lock);
 
 #endif
 }
-
-
 
 //time slice exhaustion/predemption
 #ifdef SCHED_MLFQ
@@ -811,12 +823,17 @@ void
 mlfq_yield(void)
 {
   struct proc *p = myproc();
+  int old_queue;
+  int new_queue;
   acquire(&p->lock);
+  old_queue = p->queue;
   p->state = RUNNABLE;
-  // Time slice has been completely consumed.
-  if (p->queue < 3)
+  if(p->queue < 3)
     p->queue++;
-  // New time slice starts in the new queue.
+
+  new_queue = p->queue;
+  printk("[MLFQ] tick=%d pid=%d Q%d -> Q%d reason=quantum\n",
+         get_ticks(), p->pid, old_queue, new_queue);
   p->ticks_in_slice = 0;
   enqueue(&queues[p->queue], p);
   sched();

@@ -58,3 +58,4 @@ struct proc_info {
 };
 
 int wait_info(struct proc_info *);
+

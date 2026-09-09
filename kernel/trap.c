@@ -6,7 +6,9 @@
 #include "proc.h"
 #include "defs.h"
 
+#ifdef SCHED_MLFQ
 extern int time_slices[4];
+#endif
 
 struct spinlock tickslock;
 uint ticks;
@@ -84,17 +86,31 @@ usertrap(void)
     kexit(-1);
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2) 
+    if(which_dev == 2)
   {
-      struct proc *p = myproc();
-      p->ticks_in_slice++;
-	  p->cpu_time++;
+  #ifdef SCHED_MLFQ
 
-      if (p->ticks_in_slice >= time_slices[p->queue]) {
+      struct proc *p = myproc();
+
+      p->ticks_in_slice++;
+      p->cpu_time++;
+
+      if(p->ticks_in_slice >= time_slices[p->queue]){
         mlfq_yield();
-      } else if (higher_priority_process_exists(p)) {
-        cpu_yield();
-    }
+      }
+      else if(higher_priority_process_exists(p)){
+        yield();
+      }
+
+  #else
+
+      struct proc *p = myproc();
+
+      p->cpu_time++;
+
+      yield();
+
+  #endif
   }
 
   prepare_return();
@@ -166,18 +182,31 @@ kerneltrap()
   }
 
   // give up the CPU if this is a timer interrupt.
-  if (which_dev == 2 && myproc() != 0) 
+    if(which_dev == 2 && myproc() != 0)
   {
+  #ifdef SCHED_MLFQ
+
       struct proc *p = myproc();
 
       p->ticks_in_slice++;
-	  p->cpu_time++;
+      p->cpu_time++;
 
-      if (p->ticks_in_slice >= time_slices[p->queue]) {
+      if(p->ticks_in_slice >= time_slices[p->queue]){
         mlfq_yield();
-      } else if (higher_priority_process_exists(p)) {
-        cpu_yield();
       }
+      else if(higher_priority_process_exists(p)){
+        yield();
+      }
+
+  #else
+
+      struct proc *p = myproc();
+
+      p->cpu_time++;
+
+      yield();
+
+  #endif
   }
   // the yield() may have caused some traps to occur,
   // so restore trap registers for use by kernelvec.S's sepc instruction.
@@ -191,8 +220,10 @@ clockintr()
     if(cpuid() == 0){
       acquire(&tickslock);
       ticks++;
+      #ifdef SCHED_MLFQ
       if(ticks % 48 == 0)
         priority_boost();
+      #endif
       wakeup(&ticks);
       release(&tickslock);
     }

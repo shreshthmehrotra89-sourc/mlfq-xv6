@@ -10,6 +10,7 @@ struct cpu cpus[NCPU];
 
 struct proc proc[NPROC];
 
+#ifdef SCHED_MLFQ
 // MLFQ: one FIFO queue for each priority level
 struct proc_queue {
   struct proc *head;
@@ -19,6 +20,7 @@ struct proc_queue queues[4];
 struct spinlock queue_lock;
 // Time slices for queues 0, 1, 2, 3
 int time_slices[4] = {1, 4, 8, 16};
+#endif
 
 struct proc *initproc;
 
@@ -69,12 +71,14 @@ proc_mapstacks(pagetable_t kpgtbl)
 void
 procinit(void)
 {
+    #ifdef SCHED_MLFQ
     initlock(&queue_lock, "queue_lock");
 
     for(int i = 0; i < 4; i++){
       queues[i].head = 0;
       queues[i].tail = 0;
     }
+    #endif
     struct proc *p;
 
     initlock(&pid_lock, "nextpid");
@@ -86,6 +90,7 @@ procinit(void)
     }
 }
 
+#ifdef SCHED_MLFQ
 //add process to queue
 void enqueue(struct proc_queue *q,struct proc *p)
 {
@@ -198,6 +203,7 @@ priority_boost(void)
         }
     }
 }
+#endif
 // Must be called with interrupts disabled,
 // to prevent race with process being moved
 // to a different CPU.
@@ -264,8 +270,10 @@ allocproc(void)
 found:
   p->pid = allocpid();
   p->state = USED;
+  #ifdef SCHED_MLFQ
   p->queue = 0;
   p->ticks_in_slice = 0;
+  #endif
 
   p->start_time = 0;
     p->first_run_time = -1;
@@ -371,15 +379,19 @@ userinit(void)
   initproc = p;
 
   p->cwd = namei("/");
+  #ifdef SCHED_MLFQ
   p->queue = 0;
   p->ticks_in_slice = 0;
+  #endif
   p->state = RUNNABLE;
   p->start_time = 0;
   p->first_run_time = -1;
   p->end_time = 0;
   p->cpu_time = 0;
   p->start_time = ticks;
+  #ifdef SCHED_MLFQ
   enqueue(&queues[0], p);
+  #endif
   release(&p->lock);
 }
 
@@ -451,11 +463,15 @@ kfork(void)
   release(&wait_lock);
 
   acquire(&np->lock);
+  #ifdef SCHED_MLFQ
   np->queue = 0;
   np->ticks_in_slice = 0;
+  #endif
   np->state = RUNNABLE;
   np->start_time = ticks;
+  #ifdef SCHED_MLFQ
   enqueue(&queues[0], np);
+  #endif
   release(&np->lock);
 
   return pid;
@@ -656,37 +672,71 @@ scheduler(void)
   struct cpu *c = mycpu();
 
   c->proc = 0;
-  for (;;) {
-    // The most recent process to run may have had interrupts
-    // turned off; enable them to avoid a deadlock if all
-    // processes are waiting. Then turn them back off
-    // to avoid a possible race between an interrupt
-    // and wfi.
+
+  for(;;){
     intr_on();
     intr_off();
 
-    p=get_next_process();
-    if(p!=0)
-    {
+#ifdef SCHED_MLFQ
+
+    // ---------------- MLFQ ----------------
+
+    p = get_next_process();
+
+    if(p != 0){
       acquire(&p->lock);
-      if(p->state == RUNNABLE)
-        {
-            p->state = RUNNING;
 
-            if(p->first_run_time == -1)
-            p->first_run_time = get_ticks();
+      if(p->state == RUNNABLE){
+        p->state = RUNNING;
 
-            c->proc = p;
-            swtch(&c->context, &p->context);
-            c->proc = 0;
-        }
+        if(p->first_run_time == -1)
+          p->first_run_time = get_ticks();
+
+        c->proc = p;
+
+        swtch(&c->context, &p->context);
+
+        c->proc = 0;
+      }
+
       release(&p->lock);
     }
-    else
-    {
-      // nothing to run; stop running on this core until an interrupt.
+    else{
       asm volatile("wfi");
     }
+
+#else
+
+    // ---------------- ORIGINAL XV6 RR ----------------
+
+    int found = 0;
+
+    for(p = proc; p < &proc[NPROC]; p++){
+      acquire(&p->lock);
+
+      if(p->state == RUNNABLE){
+        p->state = RUNNING;
+
+        if(p->first_run_time == -1)
+          p->first_run_time = get_ticks();
+
+        c->proc = p;
+
+        swtch(&c->context, &p->context);
+
+        c->proc = 0;
+
+        found = 1;
+      }
+
+      release(&p->lock);
+    }
+
+    if(found == 0){
+      asm volatile("wfi");
+    }
+
+#endif
   }
 }
 
@@ -718,28 +768,45 @@ sched(void)
 }
 
 //voluntary yield
-void
-cpu_yield(void)
-{
-  struct proc *p = myproc();
-  acquire(&p->lock);
-  p->state = RUNNABLE;
-  // Voluntary yield:
-  // priority remains unchanged.
-  // Put process at the tail of its current queue.
-  enqueue(&queues[p->queue], p);
-  sched();
-  release(&p->lock);
-}
-
-// Give up the CPU for one scheduling round.
+// Voluntary yield
 void
 yield(void)
 {
-    cpu_yield();				                
+#ifdef SCHED_MLFQ
+
+  struct proc *p = myproc();
+
+  acquire(&p->lock);
+
+  p->state = RUNNABLE;
+
+  // Voluntary yield: remain in the same priority queue.
+  enqueue(&queues[p->queue], p);
+
+  sched();
+
+  release(&p->lock);
+
+#else
+
+  // Original xv6 Round-Robin yield.
+  struct proc *p = myproc();
+
+  acquire(&p->lock);
+
+  p->state = RUNNABLE;
+
+  sched();
+
+  release(&p->lock);
+
+#endif
 }
 
+
+
 //time slice exhaustion/predemption
+#ifdef SCHED_MLFQ
 void
 mlfq_yield(void)
 {
@@ -755,6 +822,7 @@ mlfq_yield(void)
   sched();
   release(&p->lock);
 }
+#endif
 // A fork child's very first scheduling by scheduler()
 // will swtch to forkret.
 void
@@ -837,7 +905,9 @@ wakeup(void *chan)
       // go to sleep, also set it back to RUNNING.
       if (p->state == SLEEPING) {
         p->state = RUNNABLE;
+        #ifdef SCHED_MLFQ
         enqueue(&queues[p->queue], p);
+        #endif
       }
     }
     release(&p->lock);
@@ -858,7 +928,9 @@ kkill(int pid)
       p->killed = 1;
       if (p->state == SLEEPING) {
         p->state = RUNNABLE;
+        #ifdef SCHED_MLFQ
         enqueue(&queues[p->queue], p);
+        #endif
       }
       release(&p->lock);
       return 0;
@@ -944,43 +1016,31 @@ procdump(void)
       state = states[p->state];
     else
       state = "???";
-    printk("%d %s %s Q%d ticks=%d start=%d first=%d end=%d cpu=%d",
-   p->pid,
-   state,
-   p->name,
-   p->queue,
-   p->ticks_in_slice,
-   p->start_time,
-   p->first_run_time,
-   p->end_time,
-   p->cpu_time);
-    printk("\n");
+    #ifdef SCHED_MLFQ
+
+        printk("%d %s %s Q%d ticks=%d start=%d first=%d end=%d cpu=%d\n",
+              p->pid,
+              state,
+              p->name,
+              p->queue,
+              p->ticks_in_slice,
+              p->start_time,
+              p->first_run_time,
+              p->end_time,
+              p->cpu_time);
+
+    #else
+
+        printk("%d %s %s start=%d first=%d end=%d cpu=%d\n",
+              p->pid,
+              state,
+              p->name,
+              p->start_time,
+              p->first_run_time,
+              p->end_time,
+              p->cpu_time);
+
+    #endif
   }
 }
 
-int
-get_process_info(int pid, struct proc_info *info)
-{
-  struct proc *p;
-
-  for(p = proc; p < &proc[NPROC]; p++){
-
-    acquire(&p->lock);
-
-    if(p->pid == pid){
-
-      info->pid = p->pid;
-      info->start_time = p->start_time;
-      info->first_run_time = p->first_run_time;
-      info->end_time = p->end_time;
-      info->cpu_time = p->cpu_time;
-
-      release(&p->lock);
-      return 0;
-    }
-
-    release(&p->lock);
-  }
-
-  return -1;
-}
